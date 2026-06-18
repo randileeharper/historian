@@ -62,10 +62,11 @@ def test_get_event_list_uses_literal_filters(context, vesper_token) -> None:
     assert [item["event_id"] for item in response.json()["events"]] == ["event-1"]
 
 
-def test_a2a_query_is_authenticated_and_returns_citations(context, resolver, vesper_token) -> None:
+def test_a2a_query_is_authenticated_and_returns_answer(context, resolver, vesper_token) -> None:
     principal = context.store.authenticate(vesper_token)
     context.service.ingest(principal, event())
-    resolver.actions.extend([_search_action(), _answer(["event-1"])])
+    resolver.plans.append(_search_action())
+    resolver.answers.append(_answer())
     app = create_http_app(context)
     message = Message(
         role=Role.ROLE_USER,
@@ -97,4 +98,6 @@ def test_a2a_query_is_authenticated_and_returns_citations(context, resolver, ves
     task = response.json()["result"]["task"]
     assert task["status"]["state"] == "TASK_STATE_COMPLETED"
     data = task["artifacts"][0]["parts"][0]["data"]
-    assert data["cited_event_ids"] == ["event-1"]
+    assert data["answer"] == "Vesper started Morning Song."
+    assert "cited_event_ids" not in data
+    assert "events" not in data

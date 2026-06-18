@@ -303,6 +303,27 @@ class SQLiteHistorianStore:
             )
         return result
 
+    def query_catalog(self) -> list[dict[str, Any]]:
+        """Return only the app descriptions and record-type names needed by the planner."""
+        with self._connect() as connection:
+            apps = connection.execute(
+                "SELECT app_id, description FROM apps ORDER BY app_id"
+            ).fetchall()
+            schemas = connection.execute(
+                "SELECT DISTINCT app_id, event_type FROM schemas ORDER BY app_id, event_type"
+            ).fetchall()
+        record_types: dict[str, list[str]] = {}
+        for row in schemas:
+            record_types.setdefault(row["app_id"], []).append(row["event_type"])
+        return [
+            {
+                "app": row["app_id"],
+                "description": row["description"],
+                "record_types": record_types.get(row["app_id"], []),
+            }
+            for row in apps
+        ]
+
     def authenticate(self, token: str) -> AuthPrincipal:
         if not token:
             raise AuthenticationError("Bearer token is required.")

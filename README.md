@@ -11,7 +11,7 @@ Historian preserves raw provenance underneath every derived view. Literal user m
 - Registered schemas are immutable by `(app_id, event_type, version)`.
 - Retrieval uses timestamps, app/type/family filters, exact schema fields, literal words or phrases, and candidate- and time-bounded regex.
 - There are no embeddings, vectors, semantic indexes, or semantic-search fallbacks.
-- The local model emits structured search controls. Historian builds parameterized SQL and validates every cited event ID.
+- The local model emits structured search controls. Historian validates them and builds parameterized SQL.
 
 ## Setup
 
@@ -31,6 +31,14 @@ historian emit examples/vesper-playback-event.json
 historian ask "What did Vesper do this morning?"
 ```
 
+Create a private all-access credential for local CLI administration once:
+
+```console
+.venv/bin/historian token init-cli
+```
+
+This stores an owner-only token at `~/.config/historian/cli-token` by default. Commands such as `historian events list` and `historian ask ...` use it automatically. Explicit `--token` and `HISTORIAN_TOKEN` values still take precedence.
+
 Configuration discovery order is `--config`, `HISTORIAN_CONFIG_PATH`, `./config.json`, then `${XDG_CONFIG_HOME:-~/.config}/historian/config.json`. Environment variables use the `HISTORIAN_` prefix.
 
 ## Debugging
@@ -48,10 +56,12 @@ Enable unified debugging in `config.json`:
 
 `debug_enabled` controls two owner-readable files:
 
-- `debug_log_path` is the operational log. `historian serve` clears it on startup, then records sanitized startup/storage information, authentication failures, HTTP and A2A lifecycle, event IDs/types, batch counts, search controls/result counts, model-call timing, query status, citations, and exception traces. It does not include bearer tokens, API keys, authorization headers, or complete event payloads.
-- `resolver_debug_log_path` contains only the newest top-level NLP query. A new query overwrites the file. It contains every iterative local-model call for that query with labeled `SYSTEM PROMPT`, `USER MESSAGE`, `RESPONSE`, optional `REASONING`, and `ERROR` sections, followed by the final query status and citations.
+- `debug_log_path` is the operational log. `historian serve` clears it on startup, then records sanitized startup/storage information, authentication failures, HTTP and A2A lifecycle, event IDs/types, batch counts, search controls/result counts, model-call timing, query status, and exception traces. It does not include bearer tokens, API keys, authorization headers, or complete event payloads.
+- `resolver_debug_log_path` contains only the newest top-level NLP query. A new query overwrites the file. It contains the compact search-planning call and, when records match, the answer-synthesis call with labeled `SYSTEM PROMPT`, `USER MESSAGE`, `RESPONSE`, optional `REASONING`, and `ERROR` sections, followed by the final query status.
 
 The resolver transcript can contain conversation text and event evidence. Both debug files are created with owner-only permissions. Do not publish them.
+
+`resolver_max_retries` controls correction retries for local-model HTTP failures, malformed JSON, schema violations, invalid timestamps, and invented applications or record types. The default is `3`, in addition to the initial attempt.
 
 `log_level` controls console and Uvicorn verbosity independently. Debug mode always writes detailed `DEBUG` records to the operational file even when console logging remains `INFO` or `WARNING`.
 

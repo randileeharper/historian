@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 
+from historian.app import build_app
 from historian.cli import main
 
 
@@ -60,3 +62,25 @@ def test_serve_passes_configured_log_level(config_path, monkeypatch) -> None:
     assert main(["--config", str(config_path), "serve"]) == 0
     assert captured["log_level"] == "warning"
     assert "stale" not in (config_path.parent / "serve-debug.log").read_text(encoding="utf-8")
+
+
+def test_init_cli_token_becomes_default_credential(config_path, tmp_path, capsys) -> None:
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["cli_token_path"] = str(tmp_path / "cli-token")
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert main(["--config", str(config_path), "token", "init-cli"]) == 0
+    created = json.loads(capsys.readouterr().out)
+    token_path = tmp_path / "cli-token"
+    assert created["scopes"] == ["events:read", "events:write", "query:nlp"]
+    assert token_path.is_file()
+    assert os.stat(token_path).st_mode & 0o777 == 0o600
+
+    context = build_app(str(config_path))
+    principal = context.store.authenticate(token_path.read_text(encoding="utf-8").strip())
+    assert principal.app_id == "historian"
+    assert principal.scopes == frozenset({"events:read", "events:write", "query:nlp"})
+
+    assert main(["--config", str(config_path), "events", "list"]) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert listed["status"] == "ok"

@@ -389,7 +389,7 @@ Most Vesper/Magpie integration work is event production. If an application also 
 - Send a text/plain A2A message.
 - Include `Authorization: Bearer <token>` on Agent Card resolution and A2A requests.
 - Treat statuses `ok`, `partial`, `insufficient_evidence`, and `error` explicitly.
-- Use the returned `cited_event_ids` and `events`; do not treat uncited answer text as durable truth.
+- Natural-language query responses contain the synthesized answer and search metadata. Use the raw event APIs when exact underlying records are required.
 
 Historian's Python `HistorianClient.query()` demonstrates the official SDK pattern, but copying that client is optional.
 

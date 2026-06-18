@@ -114,8 +114,5 @@ class QueryResult:
     status: Literal["ok", "partial", "insufficient_evidence", "error"]
     answer: str
     query_id: str
-    cited_event_ids: list[str]
     searches: list[dict[str, Any]]
-    events: list[StoredEvent]
     message: str | None = None
-

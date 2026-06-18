@@ -100,7 +100,6 @@ def test_last_query_overwrites_and_ignores_older_query_writes(tmp_path) -> None:
         query_id="new",
         status="ok",
         search_step_count=1,
-        cited_event_ids=["event-1"],
         elapsed_ms=3.0,
     )
     content = settings.expanded_resolver_debug_log_path.read_text(encoding="utf-8")

@@ -38,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     token = sub.add_parser("token", help="Manage application credentials.")
     token_sub = token.add_subparsers(dest="token_command", required=True)
+    token_sub.add_parser("init-cli", help="Create and save an all-access local CLI token.")
     create = token_sub.add_parser("create")
     create.add_argument("app_id")
     create.add_argument("--name", default="manual")
@@ -89,11 +90,28 @@ def _print(payload: Any) -> None:
     print(json.dumps(to_jsonable(payload), indent=2, sort_keys=True))
 
 
-def _token(args: argparse.Namespace) -> str:
+def _write_private_token(path: Path, token: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(descriptor, (token + "\n").encode("utf-8"))
+    finally:
+        os.close(descriptor)
+    os.chmod(path, 0o600)
+
+
+def _token(args: argparse.Namespace, settings: Settings) -> str:
     token = args.token or os.getenv("HISTORIAN_TOKEN", "")
-    if not token:
-        raise HistorianError("Provide --token or HISTORIAN_TOKEN.")
-    return token
+    if token:
+        return token
+    path = settings.expanded_cli_token_path
+    if path.is_file():
+        token = path.read_text(encoding="utf-8").strip()
+        if token:
+            return token
+    raise HistorianError(
+        "No CLI credential found. Run 'historian token init-cli', provide --token, or set HISTORIAN_TOKEN."
+    )
 
 
 def _try_client(settings: Settings, token: str) -> HistorianClient:
@@ -142,7 +160,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "token":
-            if args.token_command == "create":
+            if args.token_command == "init-cli":
+                context.store.revoke_tokens("historian", "cli")
+                token = context.store.create_token(
+                    "historian",
+                    sorted(VALID_SCOPES),
+                    "cli",
+                )
+                _write_private_token(settings.expanded_cli_token_path, token)
+                _print(
+                    {
+                        "status": "ok",
+                        "app_id": "historian",
+                        "name": "cli",
+                        "scopes": sorted(VALID_SCOPES),
+                        "token_path": str(settings.expanded_cli_token_path),
+                    }
+                )
+            elif args.token_command == "create":
                 token = context.store.create_token(args.app_id, args.scope, args.name)
                 _print({"status": "ok", "app_id": args.app_id, "name": args.name, "token": token})
             elif args.token_command == "rotate":
@@ -159,7 +194,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "events":
-            principal = context.store.authenticate(_token(args))
+            principal = context.store.authenticate(_token(args, settings))
             if args.events_command == "show":
                 event = context.service.get_event(principal, args.event_id)
                 _print({"status": "ok" if event else "not_found", "event": event})
@@ -179,7 +214,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "emit":
-            token = _token(args)
+            token = _token(args, settings)
             event = json.loads(args.event_file.read_text(encoding="utf-8"))
             try:
                 payload = _try_client(settings, token).emit(event)
@@ -191,7 +226,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "ask":
-            token = _token(args)
+            token = _token(args, settings)
             try:
                 payload = _try_client(settings, token).query(args.question)
             except HistorianError:
@@ -207,6 +242,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "apps": len(context.store.list_apps()),
                 "schemas": len(context.store.list_schemas()),
                 "database_exists": settings.expanded_database_path.exists(),
+                "cli_token": {
+                    "path": str(settings.expanded_cli_token_path),
+                    "exists": settings.expanded_cli_token_path.is_file(),
+                },
                 "debug": {
                     "enabled": settings.debug_enabled,
                     "operational_log": check_debug_path(settings.expanded_debug_log_path)

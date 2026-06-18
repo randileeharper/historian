@@ -15,8 +15,8 @@ Historian v1 is implemented as a Python 3.12 service with:
 - Distinct provenance for literal user messages, assistant messages, and runtime/sidecar events.
 - Structured record families for events, transcripts, summaries, user facts, application preferences, errors, statuses, and internal records.
 - OpenAI-compatible local-model calls using strict JSON-schema output.
-- An iterative query loop over timestamps, application IDs, event types, record families, exact fields, literal terms, exact phrases, and bounded regex.
-- Citation validation: answers may cite only exact event IDs found during the query.
+- A fixed query pipeline: the local model selects registered applications and record types with optional local-time bounds and per-type literal text, Historian searches SQLite, and the model synthesizes an answer from compact matching records.
+- Bounded correction retries for transport failures, malformed structured output, invalid timestamps, and invented applications or record types.
 - Private self-logging of Historian queries without model reasoning.
 - Unified debug mode with a startup-scoped operational log and a complete last-query local-model transcript.
 - CLI administration, querying, raw inspection, and event emission.
@@ -24,7 +24,7 @@ Historian v1 is implemented as a Python 3.12 service with:
 
 There is intentionally no vector search, embedding generation, semantic index, or semantic-search fallback.
 
-The automated suite currently covers configuration, migrations, authentication, schema installation, ingestion, redaction, idempotency, atomic batches, transcript provenance, literal search, regex bounds, iterative queries, citation repair, A2A transport, HTTP transport, CLI behavior, and resolver wire format.
+The automated suite currently covers configuration, migrations, authentication, schema installation, ingestion, redaction, idempotency, atomic batches, transcript provenance, literal search, regex bounds, fixed-plan queries, A2A transport, HTTP transport, CLI behavior, and resolver wire format.
 
 ## Required To Operate Historian
 
@@ -57,7 +57,7 @@ These steps are needed before Historian is a continuously running, useful servic
    - an authenticated A2A question using a real local model
    - operational debug output and the exact last-query prompt/response transcript
 
-6. Exercise the real model against representative records. The search loop and structured output are implemented, but prompt behavior has only been tested with fake and mock resolvers. Tune the prompt or normalization if Gemma emits poor literal terms, invalid dates, excessive regex, or premature answers.
+6. Exercise the real model against representative records. The fixed planner and structured output are implemented, but prompt behavior should be tested whenever models change. Tune the planner if the model selects irrelevant record types, malformed local timestamps, or overly restrictive literal text.
 
 7. Install application manifests and retain the one-time tokens in each application's secret configuration.
 
@@ -99,6 +99,17 @@ Each producer integration should follow `HISTORIAN_INTEGRATION.md`.
 
 These are not required for initial operation:
 
+- Refactor the local-model query implementation without changing its external behavior:
+  - Move generic OpenAI-compatible HTTP, structured-output parsing, retry handling, and transcript recording into `llm.py`.
+  - Move search-plan prompt construction, dynamic examples, catalog validation, and timestamp validation into `planner.py`.
+  - Move answer prompt construction, evidence shaping, and answer validation into `synthesizer.py`.
+  - Replace loosely shaped dictionaries at module boundaries with small typed models such as `SearchPlan`, `PlannedSearch`, `PlannedRecordType`, and `AnswerResult`.
+  - Keep retries centralized and policy-driven rather than duplicating correction logic in planner and synthesizer code.
+  - Separate wire-format JSON Schema from semantic validation: schemas enforce shape, while domain validators enforce registered apps/types and valid time ranges.
+  - Keep prompt examples deterministic and generated from the active catalog, but isolate example selection from prompt prose.
+  - Add focused unit tests per layer plus a small end-to-end resolver contract suite.
+  - Preserve the fixed plan/search/summarize pipeline, literal-only retrieval, readable debug transcript, and `resolver_max_retries` behavior.
+  - Do not introduce a general agent loop, tool-calling framework, semantic search, or a new dependency-heavy orchestration framework as part of this cleanup.
 - Automatic conversation summarization.
 - Automatic durable-user-fact extraction.
 - Automatic application-preference extraction.

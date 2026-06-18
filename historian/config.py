@@ -56,7 +56,9 @@ class Settings:
     debug_enabled: bool = False
     debug_log_path: str = "/tmp/historian-debug.log"
     resolver_debug_log_path: str = "/tmp/historian-resolver.log"
+    cli_token_path: str = str(_xdg_config_home() / "historian" / "cli-token")
     request_timeout_seconds: float = 60.0
+    resolver_max_retries: int = 3
     verify_tls: bool = True
     log_level: str = "INFO"
     max_query_steps: int = 5
@@ -130,6 +132,8 @@ class Settings:
             raise ConfigError("resolver_backend must be openai_compatible or fake.")
         if self.resolver_backend == "openai_compatible" and not self.resolver_model:
             raise ConfigError("resolver_model is required.")
+        if self.resolver_max_retries < 0 or self.resolver_max_retries > 10:
+            raise ConfigError("resolver_max_retries must be between 0 and 10.")
         for name in (
             "max_query_steps",
             "max_search_results",
@@ -165,6 +169,10 @@ class Settings:
     def expanded_resolver_debug_log_path(self) -> Path:
         return Path(self.resolver_debug_log_path).expanduser()
 
+    @property
+    def expanded_cli_token_path(self) -> Path:
+        return Path(self.cli_token_path).expanduser()
+
     def sanitized(self) -> dict[str, Any]:
         payload = {
             item.name: getattr(self, item.name)
@@ -175,4 +183,6 @@ class Settings:
         payload["database_path"] = str(self.expanded_database_path)
         payload["debug_log_path"] = str(self.expanded_debug_log_path)
         payload["resolver_debug_log_path"] = str(self.expanded_resolver_debug_log_path)
+        payload["cli_token_path"] = str(self.expanded_cli_token_path)
+        payload["has_cli_token"] = self.expanded_cli_token_path.is_file()
         return payload

@@ -1,13 +1,18 @@
-"""Local-model query planning and evidence synthesis."""
+"""Local-model search planning and evidence synthesis."""
 
 from __future__ import annotations
 
 import json
+import re
+import threading
 from dataclasses import dataclass, field
+from datetime import datetime
+from difflib import get_close_matches
 from time import perf_counter
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import httpx
+from jsonschema import Draft202012Validator
 
 from .config import Settings
 from .debug import QueryTranscript, get_logger
@@ -18,13 +23,22 @@ _LOG = get_logger("resolver")
 
 
 class QueryResolver(Protocol):
-    def next_action(
+    def plan_searches(
         self,
         *,
         question: str,
         current_time: str,
         catalog: list[dict[str, Any]],
-        history: list[dict[str, Any]],
+        query_id: str,
+        step: int,
+    ) -> dict[str, Any]: ...
+
+    def synthesize_answer(
+        self,
+        *,
+        question: str,
+        current_time: str,
+        evidence: list[dict[str, Any]],
         query_id: str,
         step: int,
     ) -> dict[str, Any]: ...
@@ -40,74 +54,262 @@ class OpenAICompatibleQueryResolver:
     settings: Settings
     transcript: QueryTranscript
     transport: httpx.BaseTransport | None = None
+    _call_counts: dict[str, int] = field(default_factory=dict)
+    _call_lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def next_action(
+    def plan_searches(
         self,
         *,
         question: str,
         current_time: str,
         catalog: list[dict[str, Any]],
-        history: list[dict[str, Any]],
+        query_id: str,
+        step: int,
+    ) -> dict[str, Any]:
+        local_date = current_time[:10]
+        mentioned = [
+            app
+            for app in catalog
+            if re.search(
+                rf"(?<![\w-]){re.escape(app['app'])}(?![\w-])",
+                question,
+                flags=re.IGNORECASE,
+            )
+        ]
+        preferred = mentioned + [
+            app
+            for app in catalog
+            if app not in mentioned and app["app"] != "historian"
+        ] + [
+            app
+            for app in catalog
+            if app not in mentioned and app["app"] == "historian"
+        ]
+        if not preferred:
+            preferred = [
+                {"app": "example_app", "record_types": ["example.event"]},
+                {"app": "another_app", "record_types": ["another.event"]},
+            ]
+        example_apps = [
+            preferred[index % len(preferred)]
+            for index in range(3)
+        ]
+
+        def example_types(app: dict[str, Any]) -> list[str]:
+            return app["record_types"][:2] or ["example.event"]
+
+        broad_app, literal_app, unbounded_app = example_apps
+        broad_types = example_types(broad_app)
+        literal_types = example_types(literal_app)
+        unbounded_types = example_types(unbounded_app)
+        broad_example = {
+            "searches": [
+                {
+                    "app": broad_app["app"],
+                    "begin": f"{local_date}T00:00:00{current_time[-6:]}",
+                    "end": current_time,
+                    "record_types": [
+                        {"record_type": record_type}
+                        for record_type in broad_types
+                    ],
+                }
+            ]
+        }
+        literal_example = {
+            "searches": [
+                {
+                    "app": literal_app["app"],
+                    "record_types": [
+                        {
+                            "record_type": literal_types[0],
+                            "search": "exact words",
+                        }
+                    ],
+                }
+            ]
+        }
+        unbounded_example = {
+            "searches": [
+                {
+                    "app": unbounded_app["app"],
+                    "record_types": [
+                        {"record_type": unbounded_types[-1]}
+                    ],
+                }
+            ]
+        }
+        system = (
+            "Plan literal searches of Historian records. Return exactly one JSON object containing searches. "
+            "Each search selects one listed application and one or more listed record types. "
+            "begin and end are optional on each application search. search is optional on each record type. "
+            "Use begin/end only when the question implies a time range; "
+            f"the current system time is {current_time}. Timestamps must use that system time's UTC offset, "
+            "not Z. For 'today', begin is local midnight today and end is the current system time. "
+            "For broad questions such as what an app did, select all relevant activity record types and omit "
+            "search rather than guessing words that records might contain. search is a literal case-insensitive substring that "
+            "must occur in that record type, not a semantic query. Omit search for broad activity questions. "
+            "Never invent applications or record types. Do not answer the question and do not include reasoning.\n\n"
+            "Format examples generated from the current catalog. The short record-type lists demonstrate shape "
+            "only; choose every record type relevant to the real question.\n"
+            f'Example: a local-day search\n{json.dumps(broad_example, ensure_ascii=True)}\n'
+            f'Example: a per-record-type literal search\n{json.dumps(literal_example, ensure_ascii=True)}\n'
+            f'Example: an unbounded search with no literal text\n{json.dumps(unbounded_example, ensure_ascii=True)}'
+        )
+        user = {
+            "question": question,
+            "current_system_time": current_time,
+            "applications": catalog,
+        }
+        schema = {
+            "type": "object",
+            "properties": {
+                "searches": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "app": {"type": "string"},
+                            "begin": {"type": "string"},
+                            "end": {"type": "string"},
+                            "record_types": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 50,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "record_type": {"type": "string"},
+                                        "search": {"type": "string"},
+                                    },
+                                    "required": ["record_type"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                        "required": ["app", "record_types"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["searches"],
+            "additionalProperties": False,
+        }
+        return self._ask_json(
+            system,
+            user,
+            schema_name="historian_search_plan",
+            schema=schema,
+            query_id=query_id,
+            step=step,
+            semantic_validator=lambda result: self._validate_plan(result, catalog),
+        )
+
+    def synthesize_answer(
+        self,
+        *,
+        question: str,
+        current_time: str,
+        evidence: list[dict[str, Any]],
         query_id: str,
         step: int,
     ) -> dict[str, Any]:
         system = (
-            "You operate the Historian record search loop. Return exactly one JSON object. "
-            "You may choose action=search, action=fetch_events, or action=answer. "
-            "Historian performs parameterized SQL and bounded regex; you never write SQL. "
-            "Search language is literal, not semantic. Choose terms and exact phrases that must actually occur in records. "
-            "Do not use vibes-based paraphrases or broad descriptive phrases. "
-            "Prefer timestamp, app, record-family, event-type, and exact searchable-field constraints before text. "
-            "Use regex only when literal terms cannot express the necessary pattern. "
-            "Search result entries are compact evidence and include exact event IDs. "
-            "Fetch full events only when their payload detail is needed. "
-            "An answer must cite only event IDs shown or fetched in history. "
-            "If the records do not support an answer after reasonable searches, answer with status=insufficient_evidence. "
-            "Never guess and never include hidden reasoning."
+            "Answer the question using only the supplied Historian records. Return exactly one JSON object. "
+            "Use status=ok when the records answer the question, partial when they support only part of it, "
+            "or insufficient_evidence when they do not establish an "
+            "answer. For broad activity questions, write a concise high-level summary of at most 120 words. "
+            "Combine repeated events into one trend or outcome instead of narrating every record. Focus on major "
+            "requests, actions, outcomes, preferences, and errors; omit routine worker/status noise unless relevant. "
+            "Never request another search, never guess, and do not include hidden reasoning.\n\n"
+            "Example records: a session started for sleepy lofi; the first track was selected; "
+            "another track was selected automatically; playback stopped and the session ended.\n"
+            'Example output: {"status":"ok","answer":"Vesper ran a sleepy-lofi session, '
+            'played multiple tracks automatically, and then stopped playback."}'
         )
-        user = {
+        user: dict[str, Any] = {
             "question": question,
-            "current_time": current_time,
-            "available_records": catalog,
-            "search_history": history,
+            "current_system_time": current_time,
+            "records": evidence,
         }
-        return self._ask_json(system, user, query_id=query_id, step=step)
-
-    def _ask_json(
-        self, system: str, user: dict[str, Any], *, query_id: str, step: int
-    ) -> dict[str, Any]:
-        action_schema = {
+        schema = {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["search", "fetch_events", "answer"]},
-                "search": {
-                    "type": ["object", "null"],
-                    "properties": {
-                        "record_families": {"type": "array", "items": {"type": "string"}},
-                        "apps": {"type": "array", "items": {"type": "string"}},
-                        "event_types": {"type": "array", "items": {"type": "string"}},
-                        "occurred_after": {"type": ["string", "null"]},
-                        "occurred_before": {"type": ["string", "null"]},
-                        "required_terms": {"type": "array", "items": {"type": "string"}},
-                        "exact_phrases": {"type": "array", "items": {"type": "string"}},
-                        "field_predicates": {"type": "object"},
-                        "regex_patterns": {"type": "array", "items": {"type": "string"}},
-                        "order": {"type": "string", "enum": ["asc", "desc"]},
-                        "limit": {"type": "integer", "minimum": 1}
-                    },
-                    "additionalProperties": False,
-                },
-                "event_ids": {"type": "array", "items": {"type": "string"}},
                 "status": {
-                    "type": ["string", "null"],
-                    "enum": ["ok", "partial", "insufficient_evidence", None],
+                    "type": "string",
+                    "enum": ["ok", "partial", "insufficient_evidence"],
                 },
-                "answer": {"type": ["string", "null"]},
-                "cited_event_ids": {"type": "array", "items": {"type": "string"}}
+                "answer": {"type": "string"},
             },
-            "required": ["action", "search", "event_ids", "status", "answer", "cited_event_ids"],
+            "required": ["status", "answer"],
             "additionalProperties": False,
         }
+        return self._ask_json(
+            system,
+            user,
+            schema_name="historian_answer",
+            schema=schema,
+            query_id=query_id,
+            step=step,
+            semantic_validator=self._validate_answer,
+        )
+
+    def _ask_json(
+        self,
+        system: str,
+        user: dict[str, Any],
+        *,
+        schema_name: str,
+        schema: dict[str, Any],
+        query_id: str,
+        step: int,
+        semantic_validator: Callable[[dict[str, Any]], list[str]] | None = None,
+    ) -> dict[str, Any]:
+        last_error: Exception | None = None
+        retry_user = dict(user)
+        for attempt in range(self.settings.resolver_max_retries + 1):
+            if attempt:
+                retry_user = {
+                    **user,
+                    "retry_correction": {
+                        "attempt": attempt + 1,
+                        "previous_error": str(last_error),
+                        "instruction": "Return a corrected object only. Follow the schema and use only listed values.",
+                    },
+                }
+            try:
+                return self._ask_json_once(
+                    system,
+                    retry_user,
+                    schema_name=schema_name,
+                    schema=schema,
+                    query_id=query_id,
+                    semantic_validator=semantic_validator,
+                )
+            except ResolverError as exc:
+                last_error = exc
+                if attempt >= self.settings.resolver_max_retries:
+                    raise
+                _LOG.warning(
+                    "query_id=%s resolver_retry attempt=%s max_retries=%s error=%s",
+                    query_id,
+                    attempt + 1,
+                    self.settings.resolver_max_retries,
+                    exc,
+                )
+        raise ResolverError(f"Historian resolver failed: {last_error}")
+
+    def _ask_json_once(
+        self,
+        system: str,
+        user: dict[str, Any],
+        *,
+        schema_name: str,
+        schema: dict[str, Any],
+        query_id: str,
+        semantic_validator: Callable[[dict[str, Any]], list[str]] | None,
+    ) -> dict[str, Any]:
+        call_number = self._next_call_number(query_id)
         payload = {
             "model": self.settings.resolver_model,
             "messages": [
@@ -116,7 +318,7 @@ class OpenAICompatibleQueryResolver:
             ],
             "response_format": {
                 "type": "json_schema",
-                "json_schema": {"name": "historian_query_action", "strict": True, "schema": action_schema},
+                "json_schema": {"name": schema_name, "strict": True, "schema": schema},
             },
             **reasoning_options(self.settings.resolver_include_reasoning),
         }
@@ -135,11 +337,7 @@ class OpenAICompatibleQueryResolver:
                 verify=self.settings.verify_tls,
                 transport=self.transport,
             ) as client:
-                response = client.post(
-                    endpoint,
-                    json=payload,
-                    headers=headers,
-                )
+                response = client.post(endpoint, json=payload, headers=headers)
             http_status = response.status_code
             response_content = response.text
             response.raise_for_status()
@@ -147,12 +345,12 @@ class OpenAICompatibleQueryResolver:
             content = body["choices"][0]["message"]["content"]
             response_content = content if isinstance(content, str) else json.dumps(content, ensure_ascii=True)
             reasoning_content = self._extract_reasoning(body)
-            result = json.loads(content) if isinstance(content, str) else content
+            result = self._decode_object(content) if isinstance(content, str) else content
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
             elapsed_ms = round((perf_counter() - started) * 1000, 2)
             self.transcript.append_call(
                 query_id=query_id,
-                step=step,
+                step=call_number,
                 model=self.settings.resolver_model,
                 endpoint=endpoint,
                 system_prompt=system,
@@ -164,19 +362,28 @@ class OpenAICompatibleQueryResolver:
                 error=f"{type(exc).__name__}: {exc}",
             )
             _LOG.exception(
-                "query_id=%s step=%s model_call_failed elapsed_ms=%s http_status=%s",
+                "query_id=%s call=%s model_call_failed elapsed_ms=%s http_status=%s",
                 query_id,
-                step,
+                call_number,
                 elapsed_ms,
                 http_status,
             )
-            raise ResolverError(f"Historian resolver failed: {exc}") from exc
+            raise ResolverError(f"{type(exc).__name__}: {exc}") from exc
         if not isinstance(result, dict):
+            validation_errors = ["response must be a JSON object"]
+        else:
+            validation_errors = [
+                error.message
+                for error in Draft202012Validator(schema).iter_errors(result)
+            ]
+        if semantic_validator and isinstance(result, dict):
+            validation_errors.extend(semantic_validator(result))
+        if validation_errors:
             elapsed_ms = round((perf_counter() - started) * 1000, 2)
-            error = "Historian resolver did not return an object."
+            error = "Invalid model output: " + "; ".join(validation_errors[:8])
             self.transcript.append_call(
                 query_id=query_id,
-                step=step,
+                step=call_number,
                 model=self.settings.resolver_model,
                 endpoint=endpoint,
                 system_prompt=system,
@@ -187,12 +394,11 @@ class OpenAICompatibleQueryResolver:
                 reasoning_content=reasoning_content,
                 error=error,
             )
-            _LOG.error("query_id=%s step=%s model_response_not_object", query_id, step)
             raise ResolverError(error)
         elapsed_ms = round((perf_counter() - started) * 1000, 2)
         self.transcript.append_call(
             query_id=query_id,
-            step=step,
+            step=call_number,
             model=self.settings.resolver_model,
             endpoint=endpoint,
             system_prompt=system,
@@ -204,13 +410,93 @@ class OpenAICompatibleQueryResolver:
             error=None,
         )
         _LOG.debug(
-            "query_id=%s step=%s model_call_complete elapsed_ms=%s http_status=%s response_chars=%s",
+            "query_id=%s call=%s model_call_complete elapsed_ms=%s http_status=%s response_chars=%s",
             query_id,
-            step,
+            call_number,
             elapsed_ms,
             http_status,
             len(response_content or ""),
         )
+        return result
+
+    def _next_call_number(self, query_id: str) -> int:
+        with self._call_lock:
+            if len(self._call_counts) >= 1000 and query_id not in self._call_counts:
+                self._call_counts.clear()
+            number = self._call_counts.get(query_id, 0) + 1
+            self._call_counts[query_id] = number
+            return number
+
+    @staticmethod
+    def _validate_plan(
+        result: dict[str, Any], catalog: list[dict[str, Any]]
+    ) -> list[str]:
+        allowed = {
+            app["app"]: set(app["record_types"])
+            for app in catalog
+        }
+        errors: list[str] = []
+        for search_index, search in enumerate(result.get("searches", [])):
+            if not isinstance(search, dict):
+                continue
+            app = search.get("app")
+            if app not in allowed:
+                errors.append(
+                    f"searches[{search_index}].app {app!r} is not registered; "
+                    f"choose from {sorted(allowed)}"
+                )
+                continue
+            parsed_timestamps: dict[str, datetime] = {}
+            for timestamp_name in ("begin", "end"):
+                timestamp = search.get(timestamp_name)
+                if timestamp is None:
+                    continue
+                try:
+                    parsed_timestamps[timestamp_name] = datetime.fromisoformat(
+                        str(timestamp).replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    errors.append(
+                        f"searches[{search_index}].{timestamp_name} is not a valid ISO-8601 timestamp"
+                    )
+            if (
+                "begin" in parsed_timestamps
+                and "end" in parsed_timestamps
+                and parsed_timestamps["begin"] > parsed_timestamps["end"]
+            ):
+                errors.append(
+                    f"searches[{search_index}].begin must not be later than end"
+                )
+            for type_index, record in enumerate(search.get("record_types", [])):
+                if not isinstance(record, dict):
+                    continue
+                record_type = record.get("record_type")
+                if record_type in allowed[app]:
+                    continue
+                close = get_close_matches(
+                    str(record_type), sorted(allowed[app]), n=3, cutoff=0.45
+                )
+                suggestion = f"; closest registered types: {close}" if close else ""
+                errors.append(
+                    f"searches[{search_index}].record_types[{type_index}].record_type "
+                    f"{record_type!r} is not registered for {app}{suggestion}"
+                )
+        return errors
+
+    @staticmethod
+    def _validate_answer(result: dict[str, Any]) -> list[str]:
+        answer = result.get("answer")
+        if isinstance(answer, str) and not answer.strip():
+            return ["answer must not be empty"]
+        return []
+
+    @staticmethod
+    def _decode_object(content: str) -> dict[str, Any]:
+        """Accept the first JSON object when a local model appends a control token."""
+        stripped = content.lstrip()
+        result, _ = json.JSONDecoder().raw_decode(stripped)
+        if not isinstance(result, dict):
+            raise ValueError("Historian resolver did not return a JSON object.")
         return result
 
     def _extract_reasoning(self, body: dict[str, Any]) -> str | None:
@@ -226,36 +512,53 @@ class OpenAICompatibleQueryResolver:
 
 @dataclass(slots=True)
 class FakeQueryResolver:
-    actions: list[dict[str, Any]] = field(default_factory=list)
+    plans: list[dict[str, Any]] = field(default_factory=list)
+    answers: list[dict[str, Any]] = field(default_factory=list)
     calls: list[dict[str, Any]] = field(default_factory=list)
 
-    def next_action(
+    def plan_searches(
         self,
         *,
         question: str,
         current_time: str,
         catalog: list[dict[str, Any]],
-        history: list[dict[str, Any]],
         query_id: str,
         step: int,
     ) -> dict[str, Any]:
         self.calls.append(
             {
+                "kind": "plan",
                 "question": question,
                 "current_time": current_time,
                 "catalog": catalog,
-                "history": history,
                 "query_id": query_id,
                 "step": step,
             }
         )
-        if not self.actions:
-            return {
-                "action": "answer",
-                "search": None,
-                "event_ids": [],
-                "status": "insufficient_evidence",
-                "answer": "No configured fake query action.",
-                "cited_event_ids": [],
+        return self.plans.pop(0) if self.plans else {"searches": []}
+
+    def synthesize_answer(
+        self,
+        *,
+        question: str,
+        current_time: str,
+        evidence: list[dict[str, Any]],
+        query_id: str,
+        step: int,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            {
+                "kind": "answer",
+                "question": question,
+                "current_time": current_time,
+                "evidence": evidence,
+                "query_id": query_id,
+                "step": step,
             }
-        return self.actions.pop(0)
+        )
+        if self.answers:
+            return self.answers.pop(0)
+        return {
+            "status": "insufficient_evidence",
+            "answer": "No configured fake answer.",
+        }

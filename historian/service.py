@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
-from dataclasses import asdict
+from datetime import datetime
 from typing import Any
 
 from .config import Settings
@@ -96,29 +97,74 @@ class HistorianService:
         started = time.perf_counter()
         self.transcript.start(query_id=query_id, caller_app_id=principal.app_id, question=question)
         _LOG.info("query_id=%s caller_app=%s query_started question_chars=%s", query_id, principal.app_id, len(question))
-        history: list[dict[str, Any]] = []
         searches: list[dict[str, Any]] = []
         evidence: dict[str, StoredEvent] = {}
-        invalid_citation_repairs = 0
         result: QueryResult | None = None
 
         try:
-            for step in range(1, self.settings.max_query_steps + 1):
-                action = self.resolver.next_action(
-                    question=question,
-                    current_time=utc_now(),
-                    catalog=self.store.search_catalog(),
-                    history=history,
-                    query_id=query_id,
-                    step=step,
-                )
-                kind = str(action.get("action", "")).strip()
-                _LOG.debug("query_id=%s step=%s action=%s", query_id, step, kind)
-                if kind == "search":
-                    raw_spec = action.get("search")
-                    if not isinstance(raw_spec, dict):
-                        raise QueryError("Resolver search action omitted search controls.")
-                    spec = self._normalize_search(SearchSpec(**raw_spec))
+            current_time = self._local_time()
+            catalog = self.store.query_catalog()
+            plan = self.resolver.plan_searches(
+                question=question,
+                current_time=current_time,
+                catalog=catalog,
+                query_id=query_id,
+                step=1,
+            )
+            raw_searches = plan.get("searches")
+            if not isinstance(raw_searches, list):
+                raise QueryError("Resolver search plan omitted searches.")
+            allowed = {
+                (app["app"], record_type)
+                for app in catalog
+                for record_type in app["record_types"]
+            }
+            mentioned_apps = self._mentioned_apps(question, catalog)
+            implied_begin, implied_end = self._implied_time_bounds(
+                question, current_time
+            )
+            for raw in raw_searches[:50]:
+                if not isinstance(raw, dict):
+                    _LOG.warning("query_id=%s skipped_non_object_search", query_id)
+                    continue
+                app = str(raw.get("app", "")).strip()
+                if mentioned_apps and app not in mentioned_apps:
+                    _LOG.warning(
+                        "query_id=%s app=%s skipped_unmentioned_app",
+                        query_id,
+                        app,
+                    )
+                    continue
+                record_types = raw.get("record_types")
+                if not isinstance(record_types, list):
+                    _LOG.warning("query_id=%s app=%s skipped_missing_record_types", query_id, app)
+                    continue
+                begin = self._valid_optional_timestamp(raw.get("begin")) or implied_begin
+                end = self._valid_optional_timestamp(raw.get("end")) or implied_end
+                for record in record_types[:50]:
+                    if not isinstance(record, dict):
+                        continue
+                    record_type = str(record.get("record_type", "")).strip()
+                    if (app, record_type) not in allowed:
+                        _LOG.warning(
+                            "query_id=%s app=%s type=%s skipped_unknown_record_type",
+                            query_id,
+                            app,
+                            record_type,
+                        )
+                        continue
+                    search_text = str(record.get("search", "")).strip()
+                    spec = self._normalize_search(
+                        SearchSpec(
+                            apps=[app],
+                            event_types=[record_type],
+                            occurred_after=begin,
+                            occurred_before=end,
+                            exact_phrases=[search_text] if search_text else [],
+                            order="asc",
+                            limit=self.settings.max_search_results,
+                        )
+                    )
                     matches = self.store.search(
                         spec,
                         max_regex_candidates=self.settings.max_regex_candidates,
@@ -126,89 +172,55 @@ class HistorianService:
                     )
                     for event in matches:
                         evidence[event.event_id] = event
-                    summary = {
-                        "action": "search_result",
-                        "search": asdict(spec),
+                    search_summary = {
+                        "app": app,
+                        "record_type": record_type,
+                        "begin": spec.occurred_after,
+                        "end": spec.occurred_before,
+                        "search": search_text or None,
                         "count": len(matches),
-                        "events": [self._compact_event(event) for event in matches],
                     }
-                    searches.append({"search": asdict(spec), "count": len(matches)})
+                    searches.append(search_summary)
                     _LOG.debug(
-                        "query_id=%s step=%s search apps=%s types=%s families=%s after=%s before=%s terms=%s phrases=%s regex_count=%s limit=%s results=%s",
+                        "query_id=%s search app=%s type=%s begin=%s end=%s text=%s results=%s",
                         query_id,
-                        step,
-                        spec.apps,
-                        spec.event_types,
-                        spec.record_families,
+                        app,
+                        record_type,
                         spec.occurred_after,
                         spec.occurred_before,
-                        spec.required_terms,
-                        spec.exact_phrases,
-                        len(spec.regex_patterns),
-                        spec.limit,
+                        bool(search_text),
                         len(matches),
                     )
-                    history.append(summary)
-                    self._trim_history(history)
-                    continue
-                if kind == "fetch_events":
-                    ids = [str(item) for item in action.get("event_ids", [])][
-                        : self.settings.max_full_event_fetches
-                    ]
-                    fetched: list[StoredEvent] = []
-                    for event_id in ids:
-                        event = self.store.get_event(event_id)
-                        if event and event_id in evidence:
-                            fetched.append(event)
-                    history.append(
-                        {
-                            "action": "fetch_result",
-                            "events": [asdict(event) for event in fetched],
-                        }
-                    )
-                    self._trim_history(history)
-                    _LOG.debug("query_id=%s step=%s fetched_events=%s", query_id, step, len(fetched))
-                    continue
-                if kind == "answer":
-                    status = action.get("status")
-                    answer = str(action.get("answer") or "").strip()
-                    citations = list(dict.fromkeys(str(item) for item in action.get("cited_event_ids", [])))
-                    invalid = [event_id for event_id in citations if event_id not in evidence]
-                    if invalid and invalid_citation_repairs < 1:
-                        invalid_citation_repairs += 1
-                        history.append(
-                            {
-                                "action": "citation_error",
-                                "invalid_event_ids": invalid,
-                                "allowed_event_ids": sorted(evidence),
-                            }
-                        )
-                        continue
-                    if invalid:
-                        raise QueryError(f"Resolver cited events outside query evidence: {', '.join(invalid)}")
-                    if status not in {"ok", "partial", "insufficient_evidence"}:
-                        raise QueryError("Resolver answer status is invalid.")
-                    if not answer:
-                        raise QueryError("Resolver answer is empty.")
-                    result = QueryResult(
-                        status=status,
-                        answer=answer,
-                        query_id=query_id,
-                        cited_event_ids=citations,
-                        searches=searches,
-                        events=[evidence[event_id] for event_id in citations],
-                    )
-                    break
-                raise QueryError(f"Resolver returned unsupported action {kind!r}.")
-            if result is None:
+
+            if not evidence:
                 result = QueryResult(
                     status="insufficient_evidence",
-                    answer="Historian could not establish an answer from stored records within the search-step limit.",
+                    answer="No stored records matched the requested applications, record types, and filters.",
                     query_id=query_id,
-                    cited_event_ids=[],
                     searches=searches,
-                    events=[],
                 )
+                return result
+
+            compact_evidence = self._bounded_evidence(list(evidence.values()))
+            answer = self.resolver.synthesize_answer(
+                question=question,
+                current_time=current_time,
+                evidence=compact_evidence,
+                query_id=query_id,
+                step=2,
+            )
+            status = answer.get("status")
+            answer_text = str(answer.get("answer") or "").strip()
+            if status not in {"ok", "partial", "insufficient_evidence"}:
+                raise QueryError("Resolver answer status is invalid.")
+            if not answer_text:
+                raise QueryError("Resolver answer is empty.")
+            result = QueryResult(
+                status=status,
+                answer=answer_text,
+                query_id=query_id,
+                searches=searches,
+            )
             return result
         except Exception as exc:
             _LOG.exception("query_id=%s query_failed", query_id)
@@ -216,9 +228,7 @@ class HistorianService:
                 status="error",
                 answer="Historian could not complete the query.",
                 query_id=query_id,
-                cited_event_ids=[],
                 searches=searches,
-                events=[],
                 message=str(exc),
             )
             return result
@@ -229,16 +239,14 @@ class HistorianService:
                     query_id=query_id,
                     status=result.status,
                     search_step_count=len(searches),
-                    cited_event_ids=result.cited_event_ids,
                     elapsed_ms=elapsed_ms,
                     error=result.message,
                 )
                 _LOG.info(
-                    "query_id=%s query_finished status=%s searches=%s citations=%s elapsed_ms=%s",
+                    "query_id=%s query_finished status=%s searches=%s elapsed_ms=%s",
                     query_id,
                     result.status,
                     len(searches),
-                    len(result.cited_event_ids),
                     elapsed_ms,
                 )
                 self._record_query(principal, question, result, started)
@@ -252,14 +260,13 @@ class HistorianService:
             "source": "app://historian/query",
             "type": "historian.query.completed",
             "time": utc_now(),
-            "schemaversion": 1,
+            "schemaversion": 2,
             "visibility": "private",
             "data": {
                 "caller_app_id": principal.app_id,
                 "question": question,
                 "status": result.status,
                 "searches": result.searches,
-                "cited_event_ids": result.cited_event_ids,
                 "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
                 "answer": result.answer,
             },
@@ -306,27 +313,86 @@ class HistorianService:
                 result.append(text)
         return result
 
-    def _trim_history(self, history: list[dict[str, Any]]) -> None:
-        while len(json.dumps(history, ensure_ascii=True)) > self.settings.max_evidence_characters:
-            if not history:
+    @staticmethod
+    def _local_time() -> str:
+        return datetime.now().astimezone().isoformat()
+
+    @staticmethod
+    def _optional_text(value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text or None
+
+    @classmethod
+    def _valid_optional_timestamp(cls, value: Any) -> str | None:
+        text = cls._optional_text(value)
+        if text is None:
+            return None
+        try:
+            datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return text
+
+    @staticmethod
+    def _mentioned_apps(
+        question: str, catalog: list[dict[str, Any]]
+    ) -> set[str]:
+        return {
+            app["app"]
+            for app in catalog
+            if re.search(
+                rf"(?<![\w-]){re.escape(app['app'])}(?![\w-])",
+                question,
+                flags=re.IGNORECASE,
+            )
+        }
+
+    @staticmethod
+    def _implied_time_bounds(
+        question: str, current_time: str
+    ) -> tuple[str | None, str | None]:
+        if not re.search(r"\btoday\b", question, flags=re.IGNORECASE):
+            return None, None
+        current = datetime.fromisoformat(current_time)
+        begin = current.replace(hour=0, minute=0, second=0, microsecond=0)
+        return begin.isoformat(), current.isoformat()
+
+    def _bounded_evidence(self, events: list[StoredEvent]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for event in sorted(events, key=lambda item: item.occurred_at):
+            compact = self._compact_event(event)
+            candidate = result + [compact]
+            if (
+                result
+                and len(json.dumps(candidate, ensure_ascii=True))
+                > self.settings.max_evidence_characters
+            ):
                 break
-            first = history[0]
-            events = first.get("events")
-            if isinstance(events, list) and len(events) > 1:
-                events.pop()
-            else:
-                history.pop(0)
+            result.append(compact)
+        return result
 
     @staticmethod
     def _compact_event(event: StoredEvent) -> dict[str, Any]:
-        text = event.canonical_text
+        metadata_prefixes = (
+            "source:",
+            "type:",
+            "time:",
+            "family:",
+            "subject:",
+            "correlation_id:",
+            "causation_id:",
+            "session_id:",
+        )
+        details = "\n".join(
+            line
+            for line in event.canonical_text.splitlines()
+            if not line.startswith(metadata_prefixes)
+        )
         return {
-            "event_id": event.event_id,
             "app": event.producer_app_id,
             "type": event.event_type,
-            "family": event.record_family,
             "occurred_at": event.occurred_at,
-            "text": text[:2000],
+            "details": details[:2000],
         }
 
     @staticmethod

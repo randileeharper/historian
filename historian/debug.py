@@ -121,7 +121,6 @@ class QueryTranscript:
         query_id: str,
         status: str,
         search_step_count: int,
-        cited_event_ids: list[str],
         elapsed_ms: float,
         error: str | None = None,
     ) -> None:
@@ -131,7 +130,6 @@ class QueryTranscript:
             "=== QUERY RESULT ===",
             f"status: {status}",
             f"search_step_count: {search_step_count}",
-            f"cited_event_ids: {json.dumps(cited_event_ids, ensure_ascii=True)}",
             f"elapsed_ms: {elapsed_ms}",
         ]
         if error:

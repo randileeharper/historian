@@ -175,10 +175,10 @@
     },
     {
       "event_type": "historian.query.completed",
-      "version": 1,
+      "version": 2,
       "record_family": "internal",
       "description": "An auditable Historian natural-language query trace without hidden model reasoning.",
-      "searchable_fields": ["caller_app_id", "question", "status", "cited_event_ids"],
+      "searchable_fields": ["caller_app_id", "question", "status"],
       "redacted_fields": [],
       "json_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -188,14 +188,12 @@
           "question": {"type": "string"},
           "status": {"type": "string"},
           "searches": {"type": "array", "items": {"type": "object"}},
-          "cited_event_ids": {"type": "array", "items": {"type": "string"}},
           "elapsed_ms": {"type": "number"},
           "answer": {"type": "string"}
         },
-        "required": ["caller_app_id", "question", "status", "searches", "cited_event_ids", "elapsed_ms", "answer"],
+        "required": ["caller_app_id", "question", "status", "searches", "elapsed_ms", "answer"],
         "additionalProperties": false
       }
     }
   ]
 }
-
