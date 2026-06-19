@@ -115,7 +115,12 @@ These are not required for initial operation:
 - Automatic application-preference extraction.
 - Summary/fact supersession and correction workflows.
 - Client-side durable disk spooling.
-- Retention, archival, compaction, and deletion policies.
+- Long-term data retention and lifecycle management:
+  - Measure event volume and database growth by producer and record type.
+  - Define per-record-type retention periods, keeping durable preferences, facts, and summaries longer than high-volume playback and status events.
+  - Create rollups or summaries before pruning raw events where historical trends still matter.
+  - Add scheduled, bounded pruning with dry-run reporting and explicit exemptions.
+  - Document backup, archival, restore, and SQLite compaction (`VACUUM`) behavior.
 - PostgreSQL storage.
 - MCP.
 - Multi-user or multi-tenant authorization.
