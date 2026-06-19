@@ -85,6 +85,16 @@ An application ships a manifest containing its event schemas. The administrator 
 historian app install path/to/app.historian.json
 ```
 
+During early development, if a producer changes an existing schema version and historical
+compatibility is not required, replace the installed definitions without rotating its token:
+
+```console
+historian app sync-schemas path/to/app.historian.json
+```
+
+This intentionally bypasses schema immutability. Existing events are not migrated or revalidated,
+so production integrations should instead add a new schema version and update the producer.
+
 The application sends CloudEvents 1.0 JSON to `POST /v1/events` with `Authorization: Bearer hist_...`. `source` must equal or descend from `app://<authenticated-app-id>`. The tuple `(authenticated app, source, id)` is idempotent.
 
 Built-in shared `core.*` schemas cover:

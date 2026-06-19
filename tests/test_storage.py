@@ -92,6 +92,23 @@ def test_schema_versions_are_immutable(context, vesper_manifest) -> None:
         context.store.install_app(vesper_manifest)
 
 
+def test_schema_replacement_preserves_credentials(context, vesper_manifest) -> None:
+    token = context.store.install_app(vesper_manifest)
+    vesper_manifest.schemas[0].description = "Changed meaning during development."
+
+    context.store.replace_app_schemas(vesper_manifest)
+
+    assert context.store.authenticate(token).app_id == "vesper"
+    schema_app_id, schema = context.store.get_schema("vesper", "music.playback.started", 1)
+    assert schema_app_id == "vesper"
+    assert schema.description == "Changed meaning during development."
+
+
+def test_schema_replacement_requires_installed_app(context, vesper_manifest) -> None:
+    with pytest.raises(ValidationError, match="not installed"):
+        context.store.replace_app_schemas(vesper_manifest)
+
+
 def test_builtin_transcript_provenance_is_distinct(context, vesper_token) -> None:
     principal = context.store.authenticate(vesper_token)
     user_message = {

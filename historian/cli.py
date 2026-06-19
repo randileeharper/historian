@@ -34,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
     app_sub = app.add_subparsers(dest="app_command", required=True)
     install = app_sub.add_parser("install")
     install.add_argument("manifest", type=Path)
+    sync = app_sub.add_parser(
+        "sync-schemas",
+        help="Development only: replace installed schema definitions without rotating credentials.",
+    )
+    sync.add_argument("manifest", type=Path)
     app_sub.add_parser("list")
 
     token = sub.add_parser("token", help="Manage application credentials.")
@@ -153,6 +158,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "token": token,
                         "environment": f"HISTORIAN_TOKEN={token}",
                         "warning": "This token is shown once. Store it in the application's secret configuration.",
+                    }
+                )
+            elif args.app_command == "sync-schemas":
+                manifest = load_manifest(args.manifest)
+                context.store.replace_app_schemas(manifest)
+                _print(
+                    {
+                        "status": "ok",
+                        "app_id": manifest.app_id,
+                        "schemas": len(manifest.schemas),
+                        "warning": (
+                            "Schema definitions were replaced in place. Existing events were not migrated "
+                            "or revalidated."
+                        ),
                     }
                 )
             else:

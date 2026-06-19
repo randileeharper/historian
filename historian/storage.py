@@ -38,6 +38,7 @@ _LOG = get_logger("storage")
 
 class HistorianStore(Protocol):
     def install_app(self, manifest: AppManifest) -> str: ...
+    def replace_app_schemas(self, manifest: AppManifest) -> None: ...
     def authenticate(self, token: str) -> AuthPrincipal: ...
     def ingest(self, principal: AuthPrincipal, event: EventEnvelope) -> tuple[StoredEvent, bool]: ...
     def search(self, spec: SearchSpec) -> list[StoredEvent]: ...
@@ -202,6 +203,52 @@ class SQLiteHistorianStore:
             _LOG.exception("app_id=%s schema_install_failed", manifest.app_id)
             raise StorageError(f"Could not install schemas for {manifest.app_id}: {exc}") from exc
         _LOG.debug("app_id=%s schemas=%s schemas_ensured", manifest.app_id, len(manifest.schemas))
+
+    def replace_app_schemas(self, manifest: AppManifest) -> None:
+        """Replace installed definitions for an existing app without rotating credentials."""
+        now = utc_now()
+        try:
+            with self._connect() as connection:
+                existing_app = connection.execute(
+                    "SELECT 1 FROM apps WHERE app_id=?",
+                    (manifest.app_id,),
+                ).fetchone()
+                if existing_app is None:
+                    raise ValidationError(
+                        f"Application {manifest.app_id} is not installed. Use 'historian app install' first."
+                    )
+                connection.execute(
+                    "UPDATE apps SET description=?, updated_at=? WHERE app_id=?",
+                    (manifest.description, now, manifest.app_id),
+                )
+                for schema in manifest.schemas:
+                    payload = _canonical_json(asdict(schema))
+                    connection.execute(
+                        """INSERT INTO schemas
+                           (app_id, event_type, version, record_family, description, definition_json, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(app_id, event_type, version) DO UPDATE SET
+                               record_family=excluded.record_family,
+                               description=excluded.description,
+                               definition_json=excluded.definition_json""",
+                        (
+                            manifest.app_id,
+                            schema.event_type,
+                            schema.version,
+                            schema.record_family,
+                            schema.description,
+                            payload,
+                            now,
+                        ),
+                    )
+        except sqlite3.Error as exc:
+            _LOG.exception("app_id=%s schema_replace_failed", manifest.app_id)
+            raise StorageError(f"Could not replace schemas for {manifest.app_id}: {exc}") from exc
+        _LOG.warning(
+            "app_id=%s schemas=%s schemas_replaced_in_place",
+            manifest.app_id,
+            len(manifest.schemas),
+        )
 
     @staticmethod
     def _ensure_manifest_connection(
