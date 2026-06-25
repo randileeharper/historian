@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import time
 import uuid
@@ -141,7 +142,7 @@ class HistorianAgentExecutor(AgentExecutor):
         )
         updater = TaskUpdater(event_queue=event_queue, task_id=context.task_id, context_id=context.context_id)
         await updater.start_work()
-        result = self.context.service.query(principal, question)
+        result = await asyncio.to_thread(self.context.service.query, principal, question)
         payload = to_jsonable(result)
         message = Message(
             role=Role.ROLE_AGENT,
