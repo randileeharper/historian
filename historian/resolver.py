@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -94,31 +93,14 @@ class OpenAICompatibleQueryResolver:
         step: int,
     ) -> dict[str, Any]:
         local_date = current_time[:10]
-        mentioned = [
-            app
-            for app in catalog
-            if re.search(
-                rf"(?<![\w-]){re.escape(app['app'])}(?![\w-])",
-                question,
-                flags=re.IGNORECASE,
-            )
-        ]
-        preferred = mentioned + [
-            app
-            for app in catalog
-            if app not in mentioned and app["app"] != "historian"
-        ] + [
-            app
-            for app in catalog
-            if app not in mentioned and app["app"] == "historian"
-        ]
-        if not preferred:
-            preferred = [
+        available = list(catalog)
+        if not available:
+            available = [
                 {"app": "example_app", "record_types": ["example.event"]},
                 {"app": "another_app", "record_types": ["another.event"]},
             ]
         example_apps = [
-            preferred[index % len(preferred)]
+            available[index % len(available)]
             for index in range(3)
         ]
 

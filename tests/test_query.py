@@ -135,7 +135,7 @@ def test_malformed_optional_timestamp_does_not_abort_search(
     assert result.searches[0]["end"] is None
 
 
-def test_named_app_and_today_are_enforced_when_model_omits_them(
+def test_model_plan_is_executed_faithfully(
     context, resolver, vesper_token, monkeypatch
 ) -> None:
     monkeypatch.setattr(
@@ -166,11 +166,11 @@ def test_named_app_and_today_are_enforced_when_model_omits_them(
     resolver.answers.append(_answer())
     result = context.service.query(principal, "What did Vesper do today?")
     assert result.status == "ok"
-    assert len(result.searches) == 1
+    assert len(result.searches) == 2
     assert result.searches[0]["app"] == "vesper"
-    assert result.searches[0]["begin"] is not None
-    assert result.searches[0]["begin"].endswith("T00:00:00-07:00")
-    assert result.searches[0]["end"] is not None
+    assert result.searches[1]["app"] == "historian"
+    assert result.searches[0]["begin"] is None
+    assert result.searches[0]["end"] is None
 
 
 def test_synthesis_evidence_omits_trace_metadata(

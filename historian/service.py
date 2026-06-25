@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import time
 import uuid
 from datetime import datetime
@@ -138,28 +137,17 @@ class HistorianService:
                 for app in catalog
                 for record_type in app["record_types"]
             }
-            mentioned_apps = self._mentioned_apps(question, catalog)
-            implied_begin, implied_end = self._implied_time_bounds(
-                question, current_time
-            )
             for raw in raw_searches[:50]:
                 if not isinstance(raw, dict):
                     _LOG.warning("query_id=%s skipped_non_object_search", query_id)
                     continue
                 app = str(raw.get("app", "")).strip()
-                if mentioned_apps and app not in mentioned_apps:
-                    _LOG.warning(
-                        "query_id=%s app=%s skipped_unmentioned_app",
-                        query_id,
-                        app,
-                    )
-                    continue
                 record_types = raw.get("record_types")
                 if not isinstance(record_types, list):
                     _LOG.warning("query_id=%s app=%s skipped_missing_record_types", query_id, app)
                     continue
-                begin = self._valid_optional_timestamp(raw.get("begin")) or implied_begin
-                end = self._valid_optional_timestamp(raw.get("end")) or implied_end
+                begin = self._valid_optional_timestamp(raw.get("begin"))
+                end = self._valid_optional_timestamp(raw.get("end"))
                 for record in record_types[:50]:
                     if not isinstance(record, dict):
                         continue
@@ -406,30 +394,6 @@ class HistorianService:
         except ValueError:
             return None
         return text
-
-    @staticmethod
-    def _mentioned_apps(
-        question: str, catalog: list[dict[str, Any]]
-    ) -> set[str]:
-        return {
-            app["app"]
-            for app in catalog
-            if re.search(
-                rf"(?<![\w-]){re.escape(app['app'])}(?![\w-])",
-                question,
-                flags=re.IGNORECASE,
-            )
-        }
-
-    @staticmethod
-    def _implied_time_bounds(
-        question: str, current_time: str
-    ) -> tuple[str | None, str | None]:
-        if not re.search(r"\btoday\b", question, flags=re.IGNORECASE):
-            return None, None
-        current = datetime.fromisoformat(current_time)
-        begin = current.replace(hour=0, minute=0, second=0, microsecond=0)
-        return begin.isoformat(), current.isoformat()
 
     def _evidence_chunks(
         self,

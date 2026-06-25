@@ -131,9 +131,7 @@ def test_planner_examples_do_not_hardcode_apps_or_record_types(tmp_path) -> None
     assert "music." not in system
 
 
-def test_planner_examples_rotate_registered_apps_and_avoid_historian_bias(
-    tmp_path,
-) -> None:
+def test_planner_examples_follow_catalog_order(tmp_path) -> None:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -169,8 +167,8 @@ def test_planner_examples_rotate_registered_apps_and_avoid_historian_bias(
     )
     system = captured["messages"][0]["content"]
     examples = system.split("Format examples generated from the current catalog.", 1)[1]
+    assert examples.index('"app": "historian"') < examples.index('"app": "vesper"')
     assert examples.index('"app": "vesper"') < examples.index('"app": "magpie"')
-    assert examples.index('"app": "magpie"') < examples.index('"app": "historian"')
 
 
 def test_synthesizer_cannot_request_more_searches(tmp_path) -> None:
