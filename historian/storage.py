@@ -386,28 +386,32 @@ class SQLiteHistorianStore:
         return AuthPrincipal(row["app_id"], row["token_id"], frozenset(json.loads(row["scopes_json"])))
 
     def get_schema(
-        self, app_id: str, event_type: str, version: int
+        self, app_id: str, event_type: str, version: int, *, connection: sqlite3.Connection | None = None
     ) -> tuple[str, SchemaDefinition] | None:
         candidates = [app_id]
         if event_type.startswith("core.") and app_id != "historian":
             candidates.append("historian")
         placeholders = ",".join("?" for _ in candidates)
-        with self._connect() as connection:
-            row = connection.execute(
-                f"""SELECT app_id, definition_json FROM schemas
-                    WHERE event_type=? AND version=? AND app_id IN ({placeholders})
-                    ORDER BY CASE WHEN app_id=? THEN 0 ELSE 1 END LIMIT 1""",
-                (event_type, version, *candidates, app_id),
-            ).fetchone()
+        query = (
+            f"""SELECT app_id, definition_json FROM schemas
+                WHERE event_type=? AND version=? AND app_id IN ({placeholders})
+                ORDER BY CASE WHEN app_id=? THEN 0 ELSE 1 END LIMIT 1""",
+            (event_type, version, *candidates, app_id),
+        )
+        if connection is not None:
+            row = connection.execute(*query).fetchone()
+        else:
+            with self._connect() as conn:
+                row = conn.execute(*query).fetchone()
         if not row:
             return None
         payload = json.loads(row["definition_json"])
         return row["app_id"], SchemaDefinition(**payload)
 
     def ingest(self, principal: AuthPrincipal, event: EventEnvelope) -> tuple[StoredEvent, bool]:
-        prepared = self._prepare_event(principal, event)
         try:
             with self._connect() as connection:
+                prepared = self._prepare_event(principal, event, connection=connection)
                 return self._insert_prepared(connection, principal, event, prepared)
         except sqlite3.Error as exc:
             raise StorageError(f"Could not ingest event: {exc}") from exc
@@ -415,9 +419,12 @@ class SQLiteHistorianStore:
     def ingest_batch(
         self, principal: AuthPrincipal, events: list[EventEnvelope]
     ) -> list[tuple[StoredEvent, bool]]:
-        prepared = [(event, self._prepare_event(principal, event)) for event in events]
         try:
             with self._connect() as connection:
+                prepared = [
+                    (event, self._prepare_event(principal, event, connection=connection))
+                    for event in events
+                ]
                 return [
                     self._insert_prepared(connection, principal, event, item)
                     for event, item in prepared
@@ -426,13 +433,13 @@ class SQLiteHistorianStore:
             raise StorageError(f"Could not ingest event batch: {exc}") from exc
 
     def _prepare_event(
-        self, principal: AuthPrincipal, event: EventEnvelope
+        self, principal: AuthPrincipal, event: EventEnvelope, *, connection: sqlite3.Connection | None = None
     ) -> tuple[str, SchemaDefinition, dict[str, Any], str, str]:
         event.occurred_at = _parse_timestamp(event.occurred_at, "time")
         expected_source = f"app://{principal.app_id}"
         if event.source != expected_source and not event.source.startswith(expected_source + "/"):
             raise ValidationError(f"source must equal or descend from {expected_source}.")
-        schema_result = self.get_schema(principal.app_id, event.event_type, event.schema_version)
+        schema_result = self.get_schema(principal.app_id, event.event_type, event.schema_version, connection=connection)
         if schema_result is None:
             raise ValidationError(
                 f"Schema {event.event_type} v{event.schema_version} is not registered for {principal.app_id}."
