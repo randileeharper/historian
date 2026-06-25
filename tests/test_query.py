@@ -391,3 +391,35 @@ def test_hard_query_cap_forces_partial_result_with_message(
     answer_call = resolver.calls[-1]
     assert answer_call["hard_cap_reached"] is True
     assert len(_record_lines(answer_call["evidence"])) == 2
+
+
+def test_transcript_start_failure_does_not_crash_query(
+    context, resolver, vesper_token, monkeypatch
+) -> None:
+    principal = context.store.authenticate(vesper_token)
+    context.service.ingest(principal, event())
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(context.transcript, "start", boom)
+    resolver.plans.append(_search_action())
+    resolver.answers.append(_answer())
+    result = context.service.query(principal, "What did Vesper do?")
+    assert result.status == "ok"
+
+
+def test_query_succeeds_when_audit_recording_fails(
+    context, resolver, vesper_token, monkeypatch
+) -> None:
+    principal = context.store.authenticate(vesper_token)
+    context.service.ingest(principal, event())
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("database is on fire")
+
+    monkeypatch.setattr(context.store, "ingest_internal", boom)
+    resolver.plans.append(_search_action())
+    resolver.answers.append(_answer())
+    result = context.service.query(principal, "What did Vesper do?")
+    assert result.status == "ok"

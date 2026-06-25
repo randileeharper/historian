@@ -95,7 +95,10 @@ class HistorianService:
             raise ValidationError("Question cannot be empty.")
         query_id = str(uuid.uuid4())
         started = time.perf_counter()
-        self.transcript.start(query_id=query_id, caller_app_id=principal.app_id, question=question)
+        try:
+            self.transcript.start(query_id=query_id, caller_app_id=principal.app_id, question=question)
+        except OSError:
+            _LOG.warning("query_id=%s transcript_start_failed", query_id)
         _LOG.info("query_id=%s caller_app=%s query_started question_chars=%s", query_id, principal.app_id, len(question))
         searches: list[dict[str, Any]] = []
         evidence: dict[tuple[str, str, str], StoredEvent] = {}
@@ -341,9 +344,9 @@ class HistorianService:
         }
         try:
             self.store.ingest_internal(self.parse_event(payload))
-        except Exception:
+        except Exception as exc:
             # Query logging must not erase an otherwise valid answer.
-            return
+            _LOG.warning("query_id=%s query_audit_failed error=%s", result.query_id, exc)
 
     def _normalize_search(
         self, spec: SearchSpec, *, max_results: int | None = None
