@@ -330,26 +330,6 @@ class SQLiteHistorianStore:
         with self._connect() as connection:
             return [dict(row) for row in connection.execute(sql, parameters).fetchall()]
 
-    def search_catalog(self) -> list[dict[str, Any]]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT app_id, event_type, version, record_family, description, definition_json FROM schemas ORDER BY app_id, event_type, version"
-            ).fetchall()
-        result: list[dict[str, Any]] = []
-        for row in rows:
-            definition = json.loads(row["definition_json"])
-            result.append(
-                {
-                    "app_id": row["app_id"],
-                    "event_type": row["event_type"],
-                    "version": row["version"],
-                    "record_family": row["record_family"],
-                    "description": row["description"],
-                    "searchable_fields": definition.get("searchable_fields", []),
-                }
-            )
-        return result
-
     def query_catalog(self) -> list[dict[str, Any]]:
         """Return only the app descriptions and record-type names needed by the planner."""
         with self._connect() as connection:
