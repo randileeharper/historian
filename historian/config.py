@@ -98,8 +98,8 @@ class Settings:
     resolver_api_key: str = ""
     resolver_include_reasoning: bool = False
     debug_enabled: bool = False
-    debug_log_path: str = "/tmp/historian-debug.log"
-    resolver_debug_log_path: str = "/tmp/historian-resolver.log"
+    debug_log_path: str = str(_xdg_data_home() / "historian" / "debug.log")
+    resolver_debug_log_path: str = str(_xdg_data_home() / "historian" / "resolver.log")
     cli_token_path: str = str(_xdg_config_home() / "historian" / "cli-token")
     request_timeout_seconds: float = 60.0
     resolver_max_retries: int = 3

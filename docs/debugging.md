@@ -5,8 +5,8 @@ Enable unified debugging in `config.json`:
 ```json
 {
   "debug_enabled": true,
-  "debug_log_path": "/tmp/historian-debug.log",
-  "resolver_debug_log_path": "/tmp/historian-resolver.log",
+  "debug_log_path": "~/.local/share/historian/debug.log",
+  "resolver_debug_log_path": "~/.local/share/historian/resolver.log",
   "log_level": "INFO"
 }
 ```
@@ -26,8 +26,8 @@ Useful checks:
 
 ```console
 uv run historian doctor --live
-tail -f /tmp/historian-debug.log
-less /tmp/historian-resolver.log
+tail -f ~/.local/share/historian/debug.log
+less ~/.local/share/historian/resolver.log
 ```
 
 `doctor` reports whether debug mode is enabled and whether both configured paths are writable.

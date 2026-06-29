@@ -4,10 +4,12 @@ import json
 import logging
 import os
 
+import pytest
+
 from historian.app import build_app
 from historian.cli import main
 from historian.config import Settings
-from historian.debug import QueryTranscript, configure_logging
+from historian.debug import QueryTranscript, _prepare_private_file, configure_logging
 
 from conftest import event
 
@@ -157,3 +159,37 @@ def test_operational_log_uses_metadata_not_event_payload(tmp_path, vesper_manife
     assert "event-1" in content
     assert "music.playback.started" in content
     assert "do-not-store" not in content
+
+
+def test_default_debug_paths_are_not_in_tmp(monkeypatch) -> None:
+    """Default debug log paths must live under the XDG data dir, not /tmp."""
+    monkeypatch.setenv("XDG_DATA_HOME", "/tmp/xdg-data-fixture")
+    settings = Settings()
+    assert not settings.debug_log_path.startswith("/tmp/historian")
+    assert not settings.resolver_debug_log_path.startswith("/tmp/historian")
+    assert "/historian/debug.log" in settings.debug_log_path
+    assert "/historian/resolver.log" in settings.resolver_debug_log_path
+
+
+def test_prepare_private_file_refuses_symlink(tmp_path) -> None:
+    """_prepare_private_file must not follow a pre-existing symlink (O_NOFOLLOW).
+
+    A symlink at the target path is an attack vector for overwriting an
+    arbitrary file; opening it must fail rather than write through it.
+    """
+    real_file = tmp_path / "real-target.txt"
+    real_file.write_text("original\n", encoding="utf-8")
+    link = tmp_path / "debug.log"
+    os.symlink(real_file, link)
+    with pytest.raises(OSError):
+        _prepare_private_file(link, clear=True)
+    # The target the symlink pointed at must be untouched.
+    assert real_file.read_text(encoding="utf-8") == "original\n"
+
+
+def test_prepare_private_file_creates_new_file(tmp_path) -> None:
+    """A normal (non-symlink) path is created with owner-only permissions."""
+    target = tmp_path / "debug.log"
+    _prepare_private_file(target, clear=True)
+    assert target.is_file()
+    assert os.stat(target).st_mode & 0o777 == 0o600

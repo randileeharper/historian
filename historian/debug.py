@@ -19,7 +19,7 @@ _FILE_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
 def _prepare_private_file(path: Path, *, clear: bool) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | (os.O_TRUNC if clear else os.O_APPEND)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | (os.O_TRUNC if clear else os.O_APPEND)
     descriptor = os.open(path, flags, 0o600)
     os.close(descriptor)
     os.chmod(path, 0o600)
