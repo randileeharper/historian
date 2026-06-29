@@ -30,11 +30,10 @@ The automated suite currently covers configuration, migrations, authentication, 
 
 These steps are needed before Historian is a continuously running, useful service:
 
-1. Create a dedicated virtual environment and install the package:
+1. Install dependencies with uv:
 
    ```console
-   python3.12 -m venv .venv
-   .venv/bin/pip install -e '.[dev]'
+   uv sync
    ```
 
 2. Create `config.json` from `config.example.json`.
@@ -46,7 +45,7 @@ These steps are needed before Historian is a continuously running, useful servic
    - `resolver_api_key`, if the endpoint requires one
    - reasoning and unified debug logging settings
 
-4. Run `.venv/bin/historian doctor --live` and verify the model endpoint responds.
+4. Run `uv run historian doctor --live` and verify the model endpoint responds.
 
 5. Start Historian and verify:
 
@@ -77,7 +76,7 @@ These steps are needed before Historian is a continuously running, useful servic
 
 - A real listening-server smoke test outside the Codex sandbox. The sandbox rejected localhost port binding, although the complete HTTP/A2A stack passed through in-process ASGI tests.
 - A real Ollama `/chat/completions` query using `gemma4:latest`, inspected through the last-query transcript.
-- A clean project-local virtual environment is now installed and the suite exercises the required timeout-capable `regex` package. A packaged installation on another machine still needs a release-time smoke test.
+- A clean `uv sync` environment is now installed and the suite exercises the required timeout-capable `regex` package. A packaged installation on another machine still needs a release-time smoke test.
 - Long-running concurrency behavior under simultaneous ingestion and queries.
 - Database growth measurements with realistic Magpie and Vesper event volumes.
 - Recovery behavior after abrupt termination during SQLite writes.

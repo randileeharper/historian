@@ -2,18 +2,11 @@
 
 ## Python environment
 
-This project uses a local virtualenv, not `uv`. Create it once:
+Use `uv` to manage the environment and run all Python commands:
 
 ```sh
-python3.12 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-```
-
-Run all Python commands through the venv:
-
-```sh
-.venv/bin/pytest
-.venv/bin/python -m compileall historian tests
+uv sync
+uv run python -m compileall historian tests
 ```
 
 Do not use system `python`, `pytest`, or package commands unless explicitly asked.
@@ -23,13 +16,13 @@ Do not use system `python`, `pytest`, or package commands unless explicitly aske
 Preferred full verification:
 
 ```sh
-.venv/bin/pytest -q
+uv run pytest -q
 ```
 
 For focused checks:
 
 ```sh
-.venv/bin/pytest tests/test_storage.py -q
+uv run pytest tests/test_storage.py -q
 ```
 
 ## GitHub issue/PR workflow
@@ -46,7 +39,7 @@ For issue work:
 
 1. Create a dedicated branch before editing.
 2. Keep unrelated local files out of commits, especially untracked scratch directories like `tmp/`.
-3. Verify with `.venv/bin` commands before opening a PR.
+3. Verify with `uv run` commands before opening a PR.
 4. In the PR body, include a concise summary and exact test commands run.
 5. After merge, switch back to `main`, fetch/prune the remote, fast-forward local `main`, and delete the local feature branch.
 
@@ -54,4 +47,4 @@ This repository's GitHub remote is named `upstream`, not `origin`; check configu
 
 ## Notes
 
-The local model resolver expects an OpenAI-compatible endpoint (default `http://localhost:11434/v1`, model `gemma4:latest`). Tests use a `FakeQueryResolver` and do not require a running model. Run `.venv/bin/historian doctor --live` to verify the live model endpoint and debug-log writability before relying on natural-language queries.
+The local model resolver expects an OpenAI-compatible endpoint (default `http://localhost:11434/v1`, model `gemma4:latest`). Tests use a `FakeQueryResolver` and do not require a running model. Run `uv run historian doctor --live` to verify the live model endpoint and debug-log writability before relying on natural-language queries.

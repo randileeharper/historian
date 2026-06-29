@@ -16,25 +16,24 @@ Historian preserves raw provenance underneath every derived view. Literal user m
 ## Setup
 
 ```console
-python3.12 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
+uv sync
 cp config.example.json config.json
-historian app install examples/vesper.historian.json
-historian serve
+uv run historian app install examples/vesper.historian.json
+uv run historian serve
 ```
 
 `app install` prints a token once. Put it in the application's secret configuration:
 
 ```console
 export HISTORIAN_TOKEN=hist_...
-historian emit examples/vesper-playback-event.json
-historian ask "What did Vesper do this morning?"
+uv run historian emit examples/vesper-playback-event.json
+uv run historian ask "What did Vesper do this morning?"
 ```
 
 Create a private all-access credential for local CLI administration once:
 
 ```console
-.venv/bin/historian token init-cli
+uv run historian token init-cli
 ```
 
 This stores an owner-only token at `~/.config/historian/cli-token` by default. Commands such as `historian events list` and `historian ask ...` use it automatically. Explicit `--token` and `HISTORIAN_TOKEN` values still take precedence.
@@ -70,7 +69,7 @@ The resolver transcript can contain conversation text and event evidence. Both d
 Useful checks:
 
 ```console
-.venv/bin/historian doctor --live
+uv run historian doctor --live
 tail -f /tmp/historian-debug.log
 less /tmp/historian-resolver.log
 ```
@@ -87,14 +86,14 @@ less /tmp/historian-resolver.log
 An application ships a manifest containing its event schemas. The administrator installs it:
 
 ```console
-historian app install path/to/app.historian.json
+uv run historian app install path/to/app.historian.json
 ```
 
 During early development, if a producer changes an existing schema version and historical
 compatibility is not required, replace the installed definitions without rotating its token:
 
 ```console
-historian app sync-schemas path/to/app.historian.json
+uv run historian app sync-schemas path/to/app.historian.json
 ```
 
 This intentionally bypasses schema immutability. Existing events are not migrated or revalidated,
