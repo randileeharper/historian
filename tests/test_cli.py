@@ -90,6 +90,28 @@ def test_init_cli_token_becomes_default_credential(config_path, tmp_path, capsys
     assert listed["status"] == "ok"
 
 
+def test_default_output_is_indented(config_path, tmp_path, capsys) -> None:
+    """Without --json, output is pretty-printed with indentation."""
+    assert main(["--config", str(config_path), "app", "list"]) == 0
+    out = capsys.readouterr().out
+    # Indented output contains newlines and leading spaces.
+    assert "\n" in out
+    assert '  "' in out
+    # Still valid JSON.
+    assert json.loads(out)["status"] == "ok"
+
+
+def test_json_flag_produces_compact_output(config_path, tmp_path, capsys) -> None:
+    """With --json, output is single-line minified JSON."""
+    assert main(["--json", "--config", str(config_path), "app", "list"]) == 0
+    out = capsys.readouterr().out.rstrip("\n")
+    # Compact output is a single line with no extra whitespace.
+    assert "\n" not in out
+    assert "  " not in out
+    # Still valid JSON.
+    assert json.loads(out)["status"] == "ok"
+
+
 def _template_text() -> str:
     return files("historian").joinpath("config.example.json").read_text(encoding="utf-8")
 

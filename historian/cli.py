@@ -104,12 +104,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     config_subparsers.add_parser("path", help="Print the path Historian loads config from.")
 
-    parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Output compact minified JSON (machine-readable) instead of indented JSON.",
+    )
     return parser
 
 
+_compact_json = False
+
+
 def _print(payload: Any) -> None:
-    print(json.dumps(to_jsonable(payload), indent=2, sort_keys=True))
+    if _compact_json:
+        print(json.dumps(to_jsonable(payload), separators=(",", ":"), sort_keys=True))
+    else:
+        print(json.dumps(to_jsonable(payload), indent=2, sort_keys=True))
 
 
 def _write_private_token(path: Path, token: str) -> None:
@@ -146,8 +157,10 @@ def _try_client(settings: Settings, token: str) -> HistorianClient:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    global _compact_json
     parser = build_parser()
     args = parser.parse_args(argv)
+    _compact_json = args.as_json
     try:
         if args.command == "serve":
             import uvicorn
