@@ -117,17 +117,37 @@ class HistorianClient:
                     verify=self.verify_tls,
                 ) as client:
                     response = client.request(method, path, headers=headers, **kwargs)
-                if response.status_code >= 500 and attempt < self.retry_count:
-                    time.sleep(0.1 * (2**attempt))
-                    continue
-                response.raise_for_status()
-                payload = response.json()
-                if not isinstance(payload, dict):
-                    raise HistorianError("Historian returned a non-object response.")
-                return payload
-            except (httpx.HTTPError, ValueError, HistorianError) as exc:
+            except (httpx.HTTPError, ValueError) as exc:
+                # Transport/connectivity failure or malformed response: retryable.
                 last_error = exc
                 if attempt < self.retry_count:
                     time.sleep(0.1 * (2**attempt))
                     continue
+                raise HistorianError(f"Historian request failed: {last_error}") from exc
+
+            # 4xx (except 429 Too Many Requests) are not retryable: validation, auth,
+            # authorization, and conflict failures must surface immediately rather than
+            # be retried against the same server. See docs/integration.md.
+            if 400 <= response.status_code < 500 and response.status_code != 429:
+                raise HistorianError(
+                    f"Historian returned {response.status_code}: {response.text}"
+                )
+            # 5xx (and 429) are transient: retry when attempts remain.
+            if response.status_code >= 500 and attempt < self.retry_count:
+                last_error = HistorianError(
+                    f"Historian returned {response.status_code}: {response.text}"
+                )
+                time.sleep(0.1 * (2**attempt))
+                continue
+            if response.status_code >= 500:
+                # Final attempt on a persistent server error: surface it, do not raise
+                # the raw HTTPStatusError (which would bypass Historian's error contract).
+                raise HistorianError(
+                    f"Historian returned {response.status_code}: {response.text}"
+                )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise HistorianError("Historian returned a non-object response.")
+            return payload
         raise HistorianError(f"Historian request failed: {last_error}")
